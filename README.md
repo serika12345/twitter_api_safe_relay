@@ -2,13 +2,14 @@
 
 `twitter-api-safe` is a TypeScript monorepo for sending Twitter/X Web App API requests through a logged-in browser.
 
-The workspace contains five main entry points:
+The workspace contains six main entry points:
 
 - [`twitter-api-safe-inject`](https://www.npmjs.com/package/twitter-api-safe-inject): the canonical MAIN-world `setup.js` asset shared by Playwright and browser extensions.
 - [`twitter-api-safe-request`](https://www.npmjs.com/package/twitter-api-safe-request): an npm package you can use directly from your own Playwright code.
 - [`twitter-api-safe-wxt`](https://www.npmjs.com/package/twitter-api-safe-wxt): a WXT adapter for browser extensions.
 - [`twitter-api-safe-relay`](https://www.npmjs.com/package/twitter-api-safe-relay): an HTTP relay server that wraps `twitter-api-safe-request`.
 - [`twitter-api-safe-mcp`](https://www.npmjs.com/package/twitter-api-safe-mcp): an MCP server that runs the relay and serves MCP in a single process.
+- [`twitter-api-safe-archive-delete`](packages/archive-delete): a resumable command-line tool that deletes every post recorded in an X data archive.
 
 The core idea is simple: X.com already has an authenticated Web App API client running in the browser. This project injects a small bridge into that page and lets requests run through that live client instead of reimplementing cookies, CSRF handling, auth state, feature flags, and request behavior in Node.js.
 
@@ -137,19 +138,30 @@ Server README: [`packages/server/README.md`](packages/server/README.md)
 
 The dedicated archive deletion tool separates manual authentication from deletion. It resumes from an append-only progress log, deletes repost wrapper IDs as well as normal posts, and confirms that every outer post ID is absent.
 
+Clone this fork and prepare the workspace:
+
+```sh
+git clone https://github.com/serika12345/twitter_api_safe_relay.git
+cd twitter_api_safe_relay
+nix develop
+pnpm install
+```
+
+Extract the X data archive as `./my_archive`, then use a dedicated browser profile from `settings.json`:
+
 ```sh
 # Sign in manually using the persistent browser profile.
-pnpm archive:login --profile account1
+pnpm archive:login --profile archive-delete
 
 # Inspect the archive without contacting X.
 pnpm archive:inspect --archive ./my_archive
 
 # Reuse the saved login session and start deletion.
-pnpm archive:delete --archive ./my_archive --profile account1
+pnpm archive:delete --archive ./my_archive --profile archive-delete
 
 # Show saved progress or retry read-only verification.
 pnpm archive:status --archive ./my_archive
-pnpm archive:verify --archive ./my_archive --profile account1
+pnpm archive:verify --archive ./my_archive --profile archive-delete
 ```
 
 The delete command verifies the live account by immutable account ID and asks for an exact destructive confirmation. Requests use a randomized interval, rolling mutation limits, one retry by default, resumable progress, and a delayed second verification pass for X propagation latency.

@@ -2,19 +2,50 @@
 
 `twitter-api-safe-archive-delete` removes every post recorded in an extracted X data archive. Authentication is performed manually in a dedicated persistent browser profile before the deletion command runs.
 
+## Install from the fork
+
+```sh
+git clone https://github.com/serika12345/twitter_api_safe_relay.git
+cd twitter_api_safe_relay
+nix develop
+pnpm install
+```
+
+Extract the X data archive into `./my_archive`. The directory must contain the archive's `data/account.js` and tweet data files.
+
+Configure a dedicated persistent profile in `settings.json`:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "archive-delete",
+      "browser": {
+        "type": "launch",
+        "browserType": "chromium",
+        "userDataDir": "./user_data/archive-delete",
+        "headless": false
+      }
+    }
+  ]
+}
+```
+
+Use `--browser-executable /path/to/Chromium` with `login`, `delete`, and `verify` when the Playwright browser is not installed.
+
 ## Command flow
 
 Use the commands from the workspace root:
 
 ```sh
 # 1. Open the persistent profile and sign in manually.
-pnpm archive:login --profile account1
+pnpm archive:login --profile archive-delete
 
 # 2. Inspect the archive and current progress without opening X.
 pnpm archive:inspect --archive ./my_archive
 
 # 3. Delete unresolved posts and verify that their outer IDs are absent.
-pnpm archive:delete --archive ./my_archive --profile account1
+pnpm archive:delete --archive ./my_archive --profile archive-delete
 
 # 4. Inspect saved progress at any time.
 pnpm archive:status --archive ./my_archive
@@ -44,7 +75,7 @@ Deletion is followed by an outer-ID lookup. If an ID is still visible, the tool 
 Run a read-only retry without mutation requests with:
 
 ```sh
-pnpm archive:verify --archive ./my_archive --profile account1
+pnpm archive:verify --archive ./my_archive --profile archive-delete
 ```
 
 Change verification behavior when necessary:
