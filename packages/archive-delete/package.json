@@ -1,0 +1,37 @@
+{
+	"name": "twitter-api-safe-archive-delete",
+	"version": "0.1.0",
+	"description": "Resumable X archive deletion tool using a manually authenticated browser profile.",
+	"type": "module",
+	"main": "dist/cli.js",
+	"types": "dist/cli.d.ts",
+	"bin": {
+		"twitter-api-safe-archive-delete": "dist/cli.js",
+		"x-archive-delete": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"clean": "rimraf dist",
+		"prebuild": "pnpm --filter twitter-api-safe-relay build",
+		"build": "pnpm clean && tsc -p tsconfig.json",
+		"test": "vitest run",
+		"check": "tsc -p tsconfig.json --noEmit"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"commander": "^15.0.0",
+		"jsonc-parser": "^3.3.1",
+		"playwright": "^1.60.0",
+		"twitter-api-safe-relay": "workspace:*",
+		"twitter-api-safe-request": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^25.0.2",
+		"rimraf": "^6.1.3",
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.5"
+	}
+}

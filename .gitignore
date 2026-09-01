@@ -6,3 +6,4 @@ user_data
 web-ext-artifacts
 *.tgz
 my_archive
+.archive-delete

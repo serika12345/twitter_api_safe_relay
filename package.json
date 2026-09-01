@@ -6,6 +6,12 @@
 	"type": "module",
 	"scripts": {
 		"build": "pnpm -r run build",
+		"archive:login": "node --conditions=development packages/archive-delete/src/cli.ts login",
+		"archive:delete": "node --conditions=development packages/archive-delete/src/cli.ts delete",
+		"archive:inspect": "node --conditions=development packages/archive-delete/src/cli.ts inspect",
+		"archive:status": "node --conditions=development packages/archive-delete/src/cli.ts status",
+		"archive:verify": "node --conditions=development packages/archive-delete/src/cli.ts verify",
+		"archive:delete:legacy": "node --conditions=development packages/server/src/archive-delete.ts",
 		"dev:relay": "concurrently --kill-others --names server,ui \"node --watch --conditions=development packages/server/src/server.ts ./settings.json\" \"pnpm --filter twitter-api-safe-relay-dashboard dev\"",
 		"dev:mcp": "node --conditions=development packages/mcp/src/server.ts ./settings.json",
 		"dev:tui": "node --conditions=development packages/server/src/server.ts",

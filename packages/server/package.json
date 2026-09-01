@@ -20,6 +20,11 @@
 			"types": "./src/tools.ts",
 			"development": "./src/tools.ts",
 			"import": "./dist/tools.js"
+		},
+		"./archive-delete": {
+			"types": "./src/archive-delete/index.ts",
+			"development": "./src/archive-delete/index.ts",
+			"import": "./dist/archive-delete/index.js"
 		}
 	},
 	"bin": {
@@ -39,6 +44,10 @@
 			"./tools": {
 				"types": "./dist/tools.d.ts",
 				"import": "./dist/tools.js"
+			},
+			"./archive-delete": {
+				"types": "./dist/archive-delete/index.d.ts",
+				"import": "./dist/archive-delete/index.js"
 			}
 		}
 	},

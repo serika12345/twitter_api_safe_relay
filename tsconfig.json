@@ -44,6 +44,7 @@
 		{ "path": "./packages/request" },
 		{ "path": "./packages/dashboard" },
 		{ "path": "./packages/server" },
+		{ "path": "./packages/archive-delete" },
 		{ "path": "./packages/mcp" },
 		{ "path": "./packages/wxt" }
 	]

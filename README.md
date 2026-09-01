@@ -133,6 +133,29 @@ curl 'http://localhost:3000/i/api/graphql/gKia-nBM9kwuDEfSDeWMfQ/HomeTimeline'
 
 Server README: [`packages/server/README.md`](packages/server/README.md)
 
+## Delete every post recorded in an X archive
+
+The dedicated archive deletion tool separates manual authentication from deletion. It resumes from an append-only progress log, deletes repost wrapper IDs as well as normal posts, and confirms that every outer post ID is absent.
+
+```sh
+# Sign in manually using the persistent browser profile.
+pnpm archive:login --profile account1
+
+# Inspect the archive without contacting X.
+pnpm archive:inspect --archive ./my_archive
+
+# Reuse the saved login session and start deletion.
+pnpm archive:delete --archive ./my_archive --profile account1
+
+# Show saved progress or retry read-only verification.
+pnpm archive:status --archive ./my_archive
+pnpm archive:verify --archive ./my_archive --profile account1
+```
+
+The delete command verifies the live account by immutable account ID and asks for an exact destructive confirmation. Requests use a randomized interval, rolling mutation limits, one retry by default, resumable progress, and a delayed second verification pass for X propagation latency.
+
+Archive deletion documentation: [`packages/archive-delete/README.md`](packages/archive-delete/README.md)
+
 npm package page: [`twitter-api-safe-relay`](https://www.npmjs.com/package/twitter-api-safe-relay)
 
 ## Use from AI agents (MCP)
