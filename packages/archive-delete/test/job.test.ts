@@ -67,6 +67,82 @@ describe("loadJob", () => {
 		const repaired = await loadJob({ archive: archiveDirectory, state: stateFile, mode: "reposts" });
 		expect(repaired.counts).toMatchObject({ total: 1, completed: 1, remaining: 0 });
 	});
+
+	test("applies exclusion conditions and reports the excluded count", async () => {
+		const directory = await makeTemporaryDirectory();
+		const archiveDirectory = path.join(directory, "archive");
+		await writeArchiveFile(archiveDirectory, "account.js", "account", [
+			{ account: { accountId: "123", username: "archive_user" } },
+		]);
+		await writeArchiveFile(archiveDirectory, "tweets.js", "tweets", [
+			{ tweet: { id_str: "10", full_text: "popular", favorite_count: "120", retweet_count: "1", entities: {} } },
+			{
+				tweet: {
+					id_str: "11",
+					full_text: "with media",
+					favorite_count: "0",
+					retweet_count: "0",
+					entities: { media: [{ id_str: "m" }] },
+				},
+			},
+			{
+				tweet: {
+					id_str: "12",
+					full_text: "reply",
+					favorite_count: "0",
+					retweet_count: "0",
+					entities: {},
+					in_reply_to_status_id_str: "9",
+				},
+			},
+			{ tweet: { id_str: "13", full_text: "keep", favorite_count: "0", retweet_count: "0", entities: {} } },
+		]);
+
+		const job = await loadJob({
+			archive: archiveDirectory,
+			mode: "all",
+			excludeMinFavorites: 100,
+			excludeMedia: true,
+			excludeReplies: true,
+		});
+
+		expect(job.selectedPosts.map((post) => post.id)).toEqual(["13"]);
+		expect(job.counts).toMatchObject({ total: 1, excluded: 3, remaining: 1 });
+	});
+
+	test("reads excluded post IDs from a file", async () => {
+		const directory = await makeTemporaryDirectory();
+		const archiveDirectory = path.join(directory, "archive");
+		const excludeFile = path.join(directory, "exclude.txt");
+		await writeArchiveFile(archiveDirectory, "account.js", "account", [
+			{ account: { accountId: "123", username: "archive_user" } },
+		]);
+		await writeArchiveFile(archiveDirectory, "tweets.js", "tweets", [
+			{ tweet: { id_str: "10", full_text: "first", favorite_count: "0", retweet_count: "0", entities: {} } },
+			{ tweet: { id_str: "11", full_text: "second", favorite_count: "0", retweet_count: "0", entities: {} } },
+		]);
+		await fs.writeFile(excludeFile, "# pinned post\n10\n");
+
+		const job = await loadJob({ archive: archiveDirectory, mode: "all", excludePostIdsFile: excludeFile });
+
+		expect(job.selectedPosts.map((post) => post.id)).toEqual(["11"]);
+		expect(job.counts.excluded).toBe(1);
+	});
+
+	test("reports a post ID removed by an exclusion", async () => {
+		const directory = await makeTemporaryDirectory();
+		const archiveDirectory = path.join(directory, "archive");
+		await writeArchiveFile(archiveDirectory, "account.js", "account", [
+			{ account: { accountId: "123", username: "archive_user" } },
+		]);
+		await writeArchiveFile(archiveDirectory, "tweets.js", "tweets", [
+			{ tweet: { id_str: "10", full_text: "post", favorite_count: "0", retweet_count: "0", entities: {} } },
+		]);
+
+		await expect(
+			loadJob({ archive: archiveDirectory, mode: "all", postId: "10", excludePostIds: ["10"] }),
+		).rejects.toThrow("除外条件");
+	});
 });
 
 describe("loadProfile", () => {

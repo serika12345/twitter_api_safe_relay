@@ -26,6 +26,7 @@ import {
 } from "../src/archive-delete/rate-limit-headers.ts";
 import type { RateLimiter } from "../src/archive-delete/rate-limiter.ts";
 import { createArchiveDeleteRunner } from "../src/archive-delete/runner.ts";
+import { isExcludedPost } from "../src/archive-delete/selection.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -71,10 +72,92 @@ describe("loadArchive", () => {
 		expect(archive.account).toEqual({ id: "123", username: "archive_user" });
 		expect(archive.posts).toEqual([
 			{ id: "13", createdAt: "2024-04-01T00:00:00Z", kind: "unknown" },
-			{ id: "11", createdAt: "2024-02-01T00:00:00Z", kind: "repost" },
-			{ id: "10", createdAt: "2024-01-01T00:00:00Z", kind: "post" },
+			{ id: "11", createdAt: "2024-02-01T00:00:00Z", kind: "repost", isReply: false },
+			{ id: "10", createdAt: "2024-01-01T00:00:00Z", kind: "post", isReply: false },
 		]);
 		expect(archive.deletedPostCount).toBe(1);
+	});
+
+	test("reads popularity, media, and reply markers while leaving unknown metrics undefined", async () => {
+		const directory = await makeTemporaryDirectory();
+		await writeArchiveFile(directory, "account.js", "account", [
+			{ account: { accountId: "123", username: "archive_user" } },
+		]);
+		await writeArchiveFile(directory, "tweets.js", "tweets", [
+			{
+				tweet: {
+					id_str: "10",
+					created_at: "2024-01-01T00:00:00Z",
+					full_text: "popular with media",
+					favorite_count: "120",
+					retweet_count: "7",
+					entities: { media: [{ id_str: "1" }] },
+				},
+			},
+			{
+				tweet: {
+					id_str: "11",
+					created_at: "2024-02-01T00:00:00Z",
+					full_text: "reply",
+					favorite_count: "1",
+					retweet_count: "0",
+					entities: {},
+					in_reply_to_status_id_str: "999",
+				},
+			},
+		]);
+		await writeArchiveFile(directory, "tweet-headers.js", "tweet_headers", [
+			{ tweet: { tweet_id: "12", created_at: "2024-03-01T00:00:00Z" } },
+		]);
+
+		const archive = await loadArchive(directory);
+		const byId = new Map(archive.posts.map((post) => [post.id, post]));
+
+		expect(byId.get("10")).toMatchObject({
+			favoriteCount: 120,
+			retweetCount: 7,
+			hasMedia: true,
+			isReply: false,
+		});
+		expect(byId.get("11")).toMatchObject({
+			favoriteCount: 1,
+			retweetCount: 0,
+			hasMedia: false,
+			isReply: true,
+		});
+		expect(byId.get("12")?.kind).toBe("unknown");
+		expect(byId.get("12")?.favoriteCount).toBeUndefined();
+		expect(byId.get("12")?.hasMedia).toBeUndefined();
+		expect(byId.get("12")?.isReply).toBeUndefined();
+	});
+});
+
+describe("archive exclusions", () => {
+	const post = (overrides: Partial<ArchivePost> = {}): ArchivePost => ({ id: "1", kind: "post", ...overrides });
+
+	test("excludes by post ID", () => {
+		expect(isExcludedPost(post({ id: "42" }), { postIds: ["42"] })).toBe(true);
+		expect(isExcludedPost(post({ id: "43" }), { postIds: ["42"] })).toBe(false);
+	});
+
+	test("excludes posts at or above the popularity thresholds", () => {
+		expect(isExcludedPost(post({ favoriteCount: 10 }), { minFavoriteCount: 10 })).toBe(true);
+		expect(isExcludedPost(post({ favoriteCount: 9 }), { minFavoriteCount: 10 })).toBe(false);
+		expect(isExcludedPost(post({ retweetCount: 5 }), { minRetweetCount: 5 })).toBe(true);
+		expect(isExcludedPost(post({ retweetCount: 4 }), { minRetweetCount: 5 })).toBe(false);
+	});
+
+	test("keeps posts whose metrics are unknown when a threshold is set", () => {
+		expect(isExcludedPost(post(), { minFavoriteCount: 1 })).toBe(true);
+		expect(isExcludedPost(post(), { minRetweetCount: 1 })).toBe(true);
+	});
+
+	test("excludes media and replies while keeping unknown values", () => {
+		expect(isExcludedPost(post({ hasMedia: true }), { excludeMedia: true })).toBe(true);
+		expect(isExcludedPost(post({ hasMedia: false }), { excludeMedia: true })).toBe(false);
+		expect(isExcludedPost(post(), { excludeMedia: true })).toBe(true);
+		expect(isExcludedPost(post({ isReply: true }), { excludeReplies: true })).toBe(true);
+		expect(isExcludedPost(post({ isReply: false }), { excludeReplies: true })).toBe(false);
 	});
 });
 

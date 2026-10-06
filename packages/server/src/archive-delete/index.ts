@@ -6,3 +6,4 @@ export * from "./progress.ts";
 export * from "./rate-limit-headers.ts";
 export * from "./rate-limiter.ts";
 export * from "./runner.ts";
+export * from "./selection.ts";

@@ -1,9 +1,12 @@
 import path from "node:path";
 import {
+	type ArchiveExclusion,
+	excludePosts,
 	findRepeatedUnretweetPostIds,
 	isConfirmedAbsent,
 	loadArchive,
 	type ProgressEvent,
+	readExcludedPostIds,
 	readProgressEvents,
 } from "twitter-api-safe-relay/archive-delete";
 
@@ -14,9 +17,29 @@ export type JobOptions = {
 	state?: string;
 	mode: SelectionMode;
 	postId?: string;
+	excludePostIds?: string[];
+	excludePostIdsFile?: string;
+	excludeMinFavorites?: number;
+	excludeMinRetweets?: number;
+	excludeMedia?: boolean;
+	excludeReplies?: boolean;
 };
 
 export type ArchiveDeleteJob = Awaited<ReturnType<typeof loadJob>>;
+
+const resolveExclusion = async (options: JobOptions): Promise<ArchiveExclusion> => {
+	const postIds = [...(options.excludePostIds ?? [])];
+	if (options.excludePostIdsFile !== undefined) {
+		postIds.push(...(await readExcludedPostIds(path.resolve(options.excludePostIdsFile))));
+	}
+	return {
+		postIds,
+		excludeMedia: options.excludeMedia === true,
+		excludeReplies: options.excludeReplies === true,
+		...(options.excludeMinFavorites === undefined ? {} : { minFavoriteCount: options.excludeMinFavorites }),
+		...(options.excludeMinRetweets === undefined ? {} : { minRetweetCount: options.excludeMinRetweets }),
+	};
+};
 
 export const loadJob = async (options: JobOptions) => {
 	const archiveDirectory = path.resolve(options.archive);
@@ -27,9 +50,15 @@ export const loadJob = async (options: JobOptions) => {
 			: options.mode === "posts"
 				? archive.posts.filter((post) => post.kind !== "repost")
 				: archive.posts;
-	const selectedPosts = options.postId ? modePosts.filter((post) => post.id === options.postId) : modePosts;
+	const exclusion = await resolveExclusion(options);
+	const filteredPosts = excludePosts(modePosts, exclusion);
+	const selectedPosts = options.postId ? filteredPosts.filter((post) => post.id === options.postId) : filteredPosts;
 	if (options.postId && selectedPosts.length === 0) {
-		throw new Error(`指定した投稿ID ${options.postId} は選択範囲のアーカイブにありません`);
+		throw new Error(
+			modePosts.some((post) => post.id === options.postId)
+				? `指定した投稿ID ${options.postId} は除外条件により対象から外れています`
+				: `指定した投稿ID ${options.postId} は選択範囲のアーカイブにありません`,
+		);
 	}
 	const progressFile = path.resolve(options.state ?? path.join(".archive-delete", `${archive.account.id}.ndjson`));
 	const progressEvents = await readProgressEvents(progressFile, archive.account.id);
@@ -57,6 +86,7 @@ export const loadJob = async (options: JobOptions) => {
 		remainingPosts,
 		counts: {
 			total: selectedPosts.length,
+			excluded: modePosts.length - filteredPosts.length,
 			completed: selectedPosts.length - remainingPosts.length,
 			remaining: remainingPosts.length,
 			pending,
@@ -80,6 +110,7 @@ export const printJobHeader = (job: ArchiveDeleteJob) => {
 	console.log(`アーカイブ: ${job.archiveDirectory}`);
 	console.log(`対象アカウント: @${job.archive.account.username} (${job.archive.account.id})`);
 	console.log(`対象: ${job.counts.total}件（通常 ${job.counts.posts} / リポスト ${job.counts.reposts}）`);
+	if (job.counts.excluded > 0) console.log(`除外: ${job.counts.excluded}件`);
 	console.log(`完了済み: ${job.counts.completed}件 / 残り: ${job.counts.remaining}件`);
 	console.log(`進捗ファイル: ${job.progressFile}`);
 };

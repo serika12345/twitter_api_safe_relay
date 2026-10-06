@@ -12,6 +12,7 @@ import { findRepeatedUnretweetPostIds, isConfirmedAbsent, readProgressEvents } f
 import { createRateLimitHeaderStore } from "./archive-delete/rate-limit-headers.ts";
 import { createRateLimiter } from "./archive-delete/rate-limiter.ts";
 import { createArchiveDeleteRunner, type RunnerProgress, type RunnerSummary } from "./archive-delete/runner.ts";
+import { type ArchiveExclusion, excludePosts, readExcludedPostIds } from "./archive-delete/selection.ts";
 import { connectProfileBrowser } from "./utils/browser.ts";
 import { loadCliSettings } from "./utils/cli.ts";
 import { catchError } from "./utils/error.ts";
@@ -34,6 +35,12 @@ type CliOptions = {
 	onlyPosts: boolean;
 	verifyOnly: boolean;
 	postId?: string;
+	excludePostId: string[];
+	excludePostIdsFile?: string;
+	excludeMinFavorites?: number;
+	excludeMinRetweets?: number;
+	excludeMedia: boolean;
+	excludeReplies: boolean;
 };
 
 const positiveInteger = (value: string) => {
@@ -41,6 +48,8 @@ const positiveInteger = (value: string) => {
 	if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new InvalidArgumentError("正の整数を指定してください");
 	return parsed;
 };
+
+const collectValues = (value: string, previous: string[]) => [...previous, value];
 
 const program = new Command()
 	.name("twitter-api-safe-archive-delete")
@@ -55,6 +64,12 @@ const program = new Command()
 	.option("--only-reposts", "リポスト投稿だけを削除する", false)
 	.option("--only-posts", "通常ポスト削除だけを実行する", false)
 	.option("--post-id <id>", "指定した投稿IDだけを対象にする")
+	.option("--exclude-post-id <id>", "除外する投稿ID（複数指定可）", collectValues, [])
+	.option("--exclude-post-ids-file <file>", "除外する投稿IDを1行ずつ記述したファイル")
+	.option("--exclude-min-favorites <count>", "指定数以上のいいねがある投稿を除外する", positiveInteger)
+	.option("--exclude-min-retweets <count>", "指定数以上のリポストがある投稿を除外する", positiveInteger)
+	.option("--exclude-media", "メディア付きの投稿を除外する", false)
+	.option("--exclude-replies", "返信を除外する", false)
 	.option("--verify-only", "変更要求を送らず、未確定分の不存在確認だけを実行する", false)
 	.option("--no-verify", "削除後の全件確認を省略する")
 	.option("--min-delay-ms <milliseconds>", "API要求間隔の下限", positiveInteger, 1_050)
@@ -123,6 +138,9 @@ try {
 	if (options.postId !== undefined && !/^\d+$/.test(options.postId)) {
 		throw new Error("--post-id は数字だけで指定してください");
 	}
+	for (const id of options.excludePostId ?? []) {
+		if (!/^\d+$/.test(id)) throw new Error("--exclude-post-id は数字だけで指定してください");
+	}
 
 	const archiveDirectory = path.resolve(options.archive);
 	const archive = await loadArchive(archiveDirectory);
@@ -131,12 +149,28 @@ try {
 		: options.onlyPosts
 			? archive.posts.filter((post) => post.kind !== "repost")
 			: archive.posts;
-	const selectedPosts = options.postId
-		? modeSelectedPosts.filter((post) => post.id === options.postId)
-		: modeSelectedPosts;
+	const exclusion: ArchiveExclusion = {
+		postIds: [
+			...(options.excludePostId ?? []),
+			...(options.excludePostIdsFile === undefined
+				? []
+				: await readExcludedPostIds(path.resolve(options.excludePostIdsFile))),
+		],
+		excludeMedia: options.excludeMedia,
+		excludeReplies: options.excludeReplies,
+		...(options.excludeMinFavorites === undefined ? {} : { minFavoriteCount: options.excludeMinFavorites }),
+		...(options.excludeMinRetweets === undefined ? {} : { minRetweetCount: options.excludeMinRetweets }),
+	};
+	const filteredPosts = excludePosts(modeSelectedPosts, exclusion);
+	const selectedPosts = options.postId ? filteredPosts.filter((post) => post.id === options.postId) : filteredPosts;
 	if (options.postId && selectedPosts.length === 0) {
-		throw new Error(`指定した投稿ID ${options.postId} は対象のアーカイブにありません`);
+		throw new Error(
+			modeSelectedPosts.some((post) => post.id === options.postId)
+				? `指定した投稿ID ${options.postId} は除外条件により対象から外れています`
+				: `指定した投稿ID ${options.postId} は対象のアーカイブにありません`,
+		);
 	}
+	const excludedCount = modeSelectedPosts.length - filteredPosts.length;
 	const progressFile = path.resolve(options.state ?? path.join(".archive-delete", `${archive.account.id}.ndjson`));
 	const progressEvents = await readProgressEvents(progressFile, archive.account.id);
 	const progress = new Map(progressEvents.map((event) => [event.postId, event]));
@@ -162,6 +196,7 @@ try {
 				? `対象: 通常ポスト ${selectedPosts.length}件${options.verifyOnly ? "（確認専用）" : ""}`
 				: `対象: ${selectedPosts.length}件（リポスト ${selectedPosts.filter((post) => post.kind === "repost").length}件）`,
 	);
+	if (excludedCount > 0) console.log(`除外: ${excludedCount}件`);
 	console.log(`完了済み: ${selectedPosts.length - remainingPosts.length}件 / 残り: ${remainingPosts.length}件`);
 	console.log(`アーカイブ上で削除済み: ${archive.deletedPostCount}件`);
 	console.log(`API要求間隔: ${options.minDelayMs}〜${options.maxDelayMs}ミリ秒`);

@@ -23,6 +23,12 @@ type SelectionCliOptions = {
 	onlyReposts: boolean;
 	onlyPosts: boolean;
 	postId?: string;
+	excludePostId?: string[];
+	excludePostIdsFile?: string;
+	excludeMinFavorites?: number;
+	excludeMinRetweets?: number;
+	excludeMedia: boolean;
+	excludeReplies: boolean;
 };
 
 type RunnerCliOptions = {
@@ -37,6 +43,8 @@ const positiveInteger = (value: string) => {
 	if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new InvalidArgumentError("正の整数を指定してください");
 	return parsed;
 };
+
+const collectValues = (value: string, previous: string[]) => [...previous, value];
 
 const addProfileOptions = (command: Command) =>
 	command
@@ -53,7 +61,13 @@ const addSelectionOptions = (command: Command) =>
 		.option("--state <file>", "進捗ファイルを上書き")
 		.option("--only-reposts", "リポスト投稿だけを対象にする", false)
 		.option("--only-posts", "通常投稿だけを対象にする", false)
-		.option("--post-id <id>", "指定した投稿IDだけを対象にする");
+		.option("--post-id <id>", "指定した投稿IDだけを対象にする")
+		.option("--exclude-post-id <id>", "除外する投稿ID（複数指定可）", collectValues, [])
+		.option("--exclude-post-ids-file <file>", "除外する投稿IDを1行ずつ記述したファイル")
+		.option("--exclude-min-favorites <count>", "指定数以上のいいねがある投稿を除外する", positiveInteger)
+		.option("--exclude-min-retweets <count>", "指定数以上のリポストがある投稿を除外する", positiveInteger)
+		.option("--exclude-media", "メディア付きの投稿を除外する", false)
+		.option("--exclude-replies", "返信を除外する", false);
 
 const addRunnerOptions = (command: Command) =>
 	command
@@ -69,12 +83,22 @@ const selectionOptions = (options: SelectionCliOptions): JobOptions => {
 	if (options.postId !== undefined && !/^\d+$/.test(options.postId)) {
 		throw new Error("--post-id は数字だけで指定してください");
 	}
+	const excludePostIds = options.excludePostId ?? [];
+	for (const id of excludePostIds) {
+		if (!/^\d+$/.test(id)) throw new Error("--exclude-post-id は数字だけで指定してください");
+	}
 	const mode: SelectionMode = options.onlyReposts ? "reposts" : options.onlyPosts ? "posts" : "all";
 	return {
 		archive: options.archive,
 		state: options.state,
 		mode,
 		postId: options.postId,
+		excludePostIds,
+		excludePostIdsFile: options.excludePostIdsFile,
+		excludeMinFavorites: options.excludeMinFavorites,
+		excludeMinRetweets: options.excludeMinRetweets,
+		excludeMedia: options.excludeMedia,
+		excludeReplies: options.excludeReplies,
 	};
 };
 

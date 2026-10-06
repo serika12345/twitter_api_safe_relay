@@ -9,6 +9,10 @@ export type ArchivePost = {
 	id: string;
 	createdAt?: string;
 	kind: ArchivePostKind;
+	favoriteCount?: number;
+	retweetCount?: number;
+	hasMedia?: boolean;
+	isReply?: boolean;
 };
 
 export type ArchiveAccount = {
@@ -61,6 +65,23 @@ const getString = (value: JsonRecord, key: string): string | undefined => {
 	return typeof candidate === "string" ? candidate : undefined;
 };
 
+const getCount = (value: JsonRecord, key: string): number | undefined => {
+	const candidate = value[key];
+	if (typeof candidate === "number") return Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : undefined;
+	if (typeof candidate !== "string" || !/^\d+$/.test(candidate)) return undefined;
+	const parsed = Number(candidate);
+	return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+const hasMediaAttachment = (tweet: JsonRecord): boolean | undefined => {
+	if (tweet.entities === undefined && tweet.extended_entities === undefined) return undefined;
+	for (const key of ["entities", "extended_entities"]) {
+		const media = getNestedRecord(tweet, key)?.media;
+		if (Array.isArray(media) && media.length > 0) return true;
+	}
+	return false;
+};
+
 const parseTweet = (value: unknown, fallbackKind: ArchivePostKind): ArchivePost | undefined => {
 	const tweet = getNestedRecord(value, "tweet");
 	if (!tweet) return undefined;
@@ -70,12 +91,29 @@ const parseTweet = (value: unknown, fallbackKind: ArchivePostKind): ArchivePost 
 
 	const text = getString(tweet, "full_text");
 	const kind = text === undefined ? fallbackKind : text.startsWith("RT @") ? "repost" : "post";
+	const enriched = text !== undefined;
+	const replyId = getString(tweet, "in_reply_to_status_id_str") ?? getString(tweet, "in_reply_to_status_id");
+	const hasReplyFields = "in_reply_to_status_id_str" in tweet || "in_reply_to_status_id" in tweet;
 	return {
 		id,
 		createdAt: getString(tweet, "created_at"),
 		kind,
+		favoriteCount: getCount(tweet, "favorite_count"),
+		retweetCount: getCount(tweet, "retweet_count"),
+		hasMedia: hasMediaAttachment(tweet),
+		isReply: hasReplyFields || enriched ? replyId !== undefined && replyId !== "" : undefined,
 	};
 };
+
+const mergePosts = (existing: ArchivePost, incoming: ArchivePost): ArchivePost => ({
+	id: existing.id,
+	createdAt: existing.createdAt ?? incoming.createdAt,
+	kind: existing.kind === "unknown" ? incoming.kind : existing.kind,
+	favoriteCount: existing.favoriteCount ?? incoming.favoriteCount,
+	retweetCount: existing.retweetCount ?? incoming.retweetCount,
+	hasMedia: existing.hasMedia ?? incoming.hasMedia,
+	isReply: existing.isReply ?? incoming.isReply,
+});
 
 const loadAccount = async (dataDirectory: string): Promise<ArchiveAccount> => {
 	const rows = await readAssignedArray(path.join(dataDirectory, "account.js"));
@@ -117,7 +155,7 @@ export const loadArchive = async (archiveDirectory: string): Promise<ArchiveCont
 			const existing = postsById.get(post.id);
 			if (existing) {
 				duplicatePostCount += 1;
-				if (existing.kind === "unknown" && post.kind !== "unknown") postsById.set(post.id, post);
+				postsById.set(post.id, mergePosts(existing, post));
 				continue;
 			}
 			postsById.set(post.id, post);

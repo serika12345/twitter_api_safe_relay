@@ -98,10 +98,20 @@ Change verification behavior when necessary:
 --only-reposts        Select reposts only
 --only-posts          Select non-repost posts only
 --post-id <id>        Select one archived post ID
+--exclude-post-id <id>          Exclude a post ID (repeatable)
+--exclude-post-ids-file <file>  Read excluded post IDs from a file (one per line)
+--exclude-min-favorites <n>     Exclude posts with at least n likes
+--exclude-min-retweets <n>      Exclude posts with at least n reposts
+--exclude-media       Exclude posts with media attachments
+--exclude-replies     Exclude replies
 --state <file>        Override the progress log path
 --max-attempts <n>    Maximum attempts for one API operation (default: 2)
 --yes                 Skip the exact destructive confirmation
 ```
+
+Exclusions are evaluated against the archive snapshot. Like and repost counts are the values recorded when the archive was generated, not live values. When a count condition is set, posts whose archive entry carries no metrics are excluded as well, so unknown popularity never results in a deletion. Reposts record zero for both counts, so count conditions do not keep reposts.
+
+The archive does not record which post is pinned, so there is no dedicated option. Read the pinned post ID from the profile and pass it with `--exclude-post-id` or `--exclude-post-ids-file`. A post ID that is removed by an exclusion is reported as an error instead of silently producing an empty selection.
 
 The default progress path is `.archive-delete/<account-id>.ndjson`. It is append-only and compatible with progress created by the earlier workspace command. Legacy repost completion records are reopened when they do not contain proof that the outer repost ID was absent.
 
