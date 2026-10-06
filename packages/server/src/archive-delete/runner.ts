@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TwitterApiProfileClient } from "twitter-api-safe-request";
-import type { DeleteTweetCooldown, MutationCooldown } from "./adaptive-cooldown.ts";
+import type { OperationCooldown } from "./adaptive-cooldown.ts";
 import {
 	ApiResponseError,
 	assertNoApiErrors,
@@ -32,8 +32,8 @@ export type ArchiveDeleteRunnerOptions = {
 	recoverAfterTimeout: () => Promise<void>;
 	retryDelayMs?: (attempt: number) => number;
 	isPostCompleted?: (event: ProgressEvent | undefined) => boolean;
-	deleteTweetCooldown?: DeleteTweetCooldown;
-	mutationCooldown?: MutationCooldown;
+	deleteTweetCooldown?: OperationCooldown;
+	deleteRetweetCooldown?: OperationCooldown;
 	signal: AbortSignal;
 	onProgress?: (event: RunnerProgress) => void;
 };
@@ -130,11 +130,9 @@ export const createArchiveDeleteRunner = (options: ArchiveDeleteRunnerOptions) =
 		let lastError: unknown;
 		const cooldowns =
 			operation === "DeleteTweet"
-				? [options.mutationCooldown, options.deleteTweetCooldown].filter(
-						(cooldown): cooldown is DeleteTweetCooldown => cooldown !== undefined,
-					)
-				: operation === "DeleteRetweet" && options.mutationCooldown
-					? [options.mutationCooldown]
+				? [options.deleteTweetCooldown].filter((cooldown): cooldown is OperationCooldown => cooldown !== undefined)
+				: operation === "DeleteRetweet"
+					? [options.deleteRetweetCooldown].filter((cooldown): cooldown is OperationCooldown => cooldown !== undefined)
 					: [];
 		for (let attempt = 1; attempt <= options.maximumAttempts; attempt += 1) {
 			if (options.signal.aborted) throw options.signal.reason;

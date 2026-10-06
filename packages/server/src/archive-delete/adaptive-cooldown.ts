@@ -2,17 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readProgressEvents } from "./progress.ts";
+import type { RateLimitSnapshot } from "./rate-limit-headers.ts";
 
-const DEFAULT_QUOTA = 200;
+const DELETE_TWEET_QUOTA = 200;
+const DELETE_RETWEET_QUOTA = 200;
 const DEFAULT_WINDOW_MS = 15 * 60_000;
 const DEFAULT_SAFETY_MS = 15_000;
-const DEFAULT_PROBE_MS = 60_000;
+const DEFAULT_PROBE_MS = 15 * 60_000;
 const MAX_PROBE_MS = 30 * 60_000;
-const SHARED_MUTATION_QUOTA = 450;
-const SHARED_MUTATION_WINDOW_MS = 60 * 60_000;
 
 type PersistedCooldownState = {
-	version: 1;
+	version: 2;
 	quota: number;
 	windowMs: number;
 	safetyMs: number;
@@ -29,18 +29,17 @@ export type CooldownNotice = {
 	message: string;
 };
 
-export type DeleteTweetCooldown = {
+export type OperationCooldown = {
 	beforeAttempt: () => Promise<void>;
 	recordSuccess: () => Promise<void>;
 	recordFailure: () => Promise<void>;
 };
 
-export type MutationCooldown = DeleteTweetCooldown;
-
 type CooldownOptions = {
 	accountId: string;
 	progressFile: string;
 	signal: AbortSignal;
+	serverSnapshot?: () => RateLimitSnapshot | undefined;
 	onNotice?: (notice: CooldownNotice) => void;
 	now?: () => number;
 	wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -56,7 +55,7 @@ type CooldownModel = {
 };
 
 const defaultState = (model: CooldownModel): PersistedCooldownState => ({
-	version: 1,
+	version: 2,
 	quota: model.quota,
 	windowMs: model.windowMs,
 	safetyMs: DEFAULT_SAFETY_MS,
@@ -69,7 +68,7 @@ const isState = (value: unknown): value is PersistedCooldownState => {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const state = value as Partial<PersistedCooldownState>;
 	return (
-		state.version === 1 &&
+		state.version === 2 &&
 		Number.isSafeInteger(state.quota) &&
 		(state.quota ?? 0) > 0 &&
 		Number.isSafeInteger(state.windowMs) &&
@@ -115,7 +114,7 @@ const formatWait = (milliseconds: number) => {
 	return minutes === 0 ? `${remainingSeconds}秒` : `${minutes}分${remainingSeconds}秒`;
 };
 
-const createCooldown = async (options: CooldownOptions, model: CooldownModel): Promise<DeleteTweetCooldown> => {
+const createCooldown = async (options: CooldownOptions, model: CooldownModel): Promise<OperationCooldown> => {
 	const now = options.now ?? Date.now;
 	const wait =
 		options.wait ??
@@ -154,26 +153,41 @@ const createCooldown = async (options: CooldownOptions, model: CooldownModel): P
 		successfulAt = successfulAt.filter((timestamp) => timestamp >= cutoff);
 	};
 
+	const safetyJitter = () => Math.floor(random() * Math.max(1, Math.floor(state.safetyMs / 3)));
+
+	const activeSnapshot = (time: number) => {
+		const snapshot = options.serverSnapshot?.();
+		return snapshot !== undefined && snapshot.resetAt > time ? snapshot : undefined;
+	};
+
+	const snapshotReleaseAt = (snapshot: RateLimitSnapshot) => snapshot.resetAt + state.safetyMs + safetyJitter();
+
 	const quotaReleaseAt = (time: number) => {
 		trimHistory(time);
 		const insideWindow = successfulAt.filter((timestamp) => timestamp > time - state.windowMs);
 		if (insideWindow.length < state.quota) return 0;
 		const boundary = insideWindow.at(-state.quota);
 		if (boundary === undefined) return 0;
-		const safetyJitter = Math.floor(random() * Math.max(1, Math.floor(state.safetyMs / 3)));
-		return boundary + state.windowMs + state.safetyMs + safetyJitter;
+		return boundary + state.windowMs + state.safetyMs + safetyJitter();
 	};
 
 	const beforeAttempt = async () => {
 		const current = now();
-		const quotaTarget = quotaReleaseAt(current);
-		const target = Math.max(nextAttemptAt, quotaTarget);
+		const snapshot = activeSnapshot(current);
+		const quotaTarget = snapshot === undefined ? quotaReleaseAt(current) : 0;
+		const serverTarget = snapshot !== undefined && snapshot.remaining <= 0 ? snapshotReleaseAt(snapshot) : 0;
+		const target = Math.max(nextAttemptAt, quotaTarget, serverTarget);
 		if (target <= current) return;
 		const waitMs = target - current;
 		options.onNotice?.({
 			kind: "waiting",
 			waitMs,
-			message: `直近${Math.round(state.windowMs / 60_000)}分の成功数を基に${formatWait(waitMs)}待機します`,
+			message:
+				serverTarget >= target
+					? `サーバー通知の残量0件に基づき${formatWait(waitMs)}待機します`
+					: nextAttemptAt >= target
+						? `制限検出後の待機として${formatWait(waitMs)}待機します`
+						: `直近${Math.round(state.windowMs / 60_000)}分の成功数を基に${formatWait(waitMs)}待機します`,
 		});
 		await wait(waitMs, options.signal);
 		nextAttemptAt = 0;
@@ -182,9 +196,15 @@ const createCooldown = async (options: CooldownOptions, model: CooldownModel): P
 	const recordFailure = async () => {
 		const current = now();
 		restrictionObservedAt ??= current;
-		const quotaTarget = quotaReleaseAt(current);
+		const snapshot = activeSnapshot(current);
 		const probeWait = Math.min(MAX_PROBE_MS, state.probeMs * 2 ** consecutiveFailures);
-		const target = quotaTarget > current ? quotaTarget : current + probeWait;
+		const target = (() => {
+			if (snapshot !== undefined) {
+				return snapshot.remaining <= 0 ? snapshotReleaseAt(snapshot) : current + probeWait;
+			}
+			const quotaTarget = quotaReleaseAt(current);
+			return quotaTarget > current ? quotaTarget : current + probeWait;
+		})();
 		nextAttemptAt = Math.max(nextAttemptAt, target);
 		consecutiveFailures += 1;
 		options.onNotice?.({
@@ -216,18 +236,18 @@ const createCooldown = async (options: CooldownOptions, model: CooldownModel): P
 	return { beforeAttempt, recordSuccess, recordFailure };
 };
 
-export const createDeleteTweetCooldown = async (options: CooldownOptions): Promise<DeleteTweetCooldown> =>
+export const createDeleteTweetCooldown = async (options: CooldownOptions): Promise<OperationCooldown> =>
 	await createCooldown(options, {
-		quota: DEFAULT_QUOTA,
+		quota: DELETE_TWEET_QUOTA,
 		windowMs: DEFAULT_WINDOW_MS,
 		stateFile: `${options.progressFile}.cooldown.json`,
 		isSuccessfulEvent: (event) => event.status === "deleted",
 	});
 
-export const createMutationCooldown = async (options: CooldownOptions): Promise<MutationCooldown> =>
+export const createDeleteRetweetCooldown = async (options: CooldownOptions): Promise<OperationCooldown> =>
 	await createCooldown(options, {
-		quota: SHARED_MUTATION_QUOTA,
-		windowMs: SHARED_MUTATION_WINDOW_MS,
-		stateFile: `${options.progressFile}.mutation-cooldown.json`,
-		isSuccessfulEvent: (event) => event.status === "deleted" || event.status === "unretweeted",
+		quota: DELETE_RETWEET_QUOTA,
+		windowMs: DEFAULT_WINDOW_MS,
+		stateFile: `${options.progressFile}.retweet-cooldown.json`,
+		isSuccessfulEvent: (event) => event.status === "unretweeted",
 	});

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { TwitterApiProfileClient } from "twitter-api-safe-request";
 import { afterEach, describe, expect, test } from "vitest";
-import { createDeleteTweetCooldown, createMutationCooldown } from "../src/archive-delete/adaptive-cooldown.ts";
+import { createDeleteRetweetCooldown, createDeleteTweetCooldown } from "../src/archive-delete/adaptive-cooldown.ts";
 import {
 	ApiResponseError,
 	assertNoApiErrors,
@@ -18,6 +18,12 @@ import {
 	REPOST_WRAPPER_ABSENT_DETAIL,
 	readProgress,
 } from "../src/archive-delete/progress.ts";
+import {
+	createRateLimitHeaderStore,
+	parseRateLimitHeaders,
+	type RateLimitResponse,
+	type RateLimitSnapshot,
+} from "../src/archive-delete/rate-limit-headers.ts";
 import type { RateLimiter } from "../src/archive-delete/rate-limiter.ts";
 import { createArchiveDeleteRunner } from "../src/archive-delete/runner.ts";
 
@@ -470,7 +476,7 @@ describe("legacy repost progress repair", () => {
 	});
 });
 
-describe("adaptive DeleteTweet cooldown", () => {
+describe("adaptive cooldown", () => {
 	test("waits for the rolling 200 request window before the next deletion", async () => {
 		const directory = await makeTemporaryDirectory();
 		const progressFile = path.join(directory, "progress.ndjson");
@@ -503,22 +509,33 @@ describe("adaptive DeleteTweet cooldown", () => {
 		expect(waits).toEqual([615_000]);
 	});
 
-	test("shares a rolling one-hour allowance between deletes and unretweets", async () => {
+	test("limits unretweets with an independent 200 request window", async () => {
 		const directory = await makeTemporaryDirectory();
 		const progressFile = path.join(directory, "progress.ndjson");
-		const events = Array.from({ length: 450 }, (_, index) => ({
-			version: 1,
-			at: new Date(index * 1_000).toISOString(),
-			accountId: "123",
-			postId: String(index),
-			kind: index < 400 ? "repost" : "post",
-			status: index < 400 ? "unretweeted" : "deleted",
-			attempts: 1,
-		}));
+		const events = [
+			...Array.from({ length: 200 }, (_, index) => ({
+				version: 1,
+				at: new Date(index * 1_000).toISOString(),
+				accountId: "123",
+				postId: `repost-${index}`,
+				kind: "repost",
+				status: "unretweeted",
+				attempts: 1,
+			})),
+			...Array.from({ length: 200 }, (_, index) => ({
+				version: 1,
+				at: new Date((200 + index) * 1_000).toISOString(),
+				accountId: "123",
+				postId: `post-${index}`,
+				kind: "post",
+				status: "deleted",
+				attempts: 1,
+			})),
+		];
 		await fs.writeFile(progressFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
-		let currentTime = 1_200_000;
+		let currentTime = 500_000;
 		const waits: number[] = [];
-		const cooldown = await createMutationCooldown({
+		const cooldown = await createDeleteRetweetCooldown({
 			accountId: "123",
 			progressFile,
 			signal: new AbortController().signal,
@@ -532,7 +549,149 @@ describe("adaptive DeleteTweet cooldown", () => {
 
 		await cooldown.beforeAttempt();
 
-		expect(waits).toEqual([2_415_000]);
+		expect(waits).toEqual([415_000]);
+	});
+
+	test("waits until the server reset when the remaining budget is exhausted", async () => {
+		const directory = await makeTemporaryDirectory();
+		const progressFile = path.join(directory, "progress.ndjson");
+		let currentTime = 1_000_000;
+		const waits: number[] = [];
+		const notices: number[] = [];
+		const snapshot: RateLimitSnapshot = {
+			limit: 200,
+			remaining: 0,
+			resetAt: 1_600_000,
+			observedAt: 1_000_000,
+		};
+		const cooldown = await createDeleteTweetCooldown({
+			accountId: "123",
+			progressFile,
+			signal: new AbortController().signal,
+			now: () => currentTime,
+			random: () => 0,
+			serverSnapshot: () => snapshot,
+			wait: async (milliseconds) => {
+				waits.push(milliseconds);
+				currentTime += milliseconds;
+			},
+			onNotice: ({ waitMs }) => {
+				if (waitMs !== undefined) notices.push(waitMs);
+			},
+		});
+
+		await cooldown.beforeAttempt();
+
+		expect(waits).toEqual([615_000]);
+		expect(notices).toEqual([615_000]);
+	});
+
+	test("accepts the next attempt while the server reports remaining budget", async () => {
+		const directory = await makeTemporaryDirectory();
+		const progressFile = path.join(directory, "progress.ndjson");
+		const events = Array.from({ length: 200 }, (_, index) => ({
+			version: 1,
+			at: new Date(index * 1_000).toISOString(),
+			accountId: "123",
+			postId: String(index),
+			kind: "post",
+			status: "deleted",
+			attempts: 1,
+		}));
+		await fs.writeFile(progressFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+		let currentTime = 300_000;
+		const waits: number[] = [];
+		const snapshot: RateLimitSnapshot = {
+			limit: 200,
+			remaining: 5,
+			resetAt: 1_200_000,
+			observedAt: 300_000,
+		};
+		const cooldown = await createDeleteTweetCooldown({
+			accountId: "123",
+			progressFile,
+			signal: new AbortController().signal,
+			now: () => currentTime,
+			random: () => 0,
+			serverSnapshot: () => snapshot,
+			wait: async (milliseconds) => {
+				waits.push(milliseconds);
+				currentTime += milliseconds;
+			},
+		});
+
+		await cooldown.beforeAttempt();
+
+		expect(waits).toEqual([]);
+	});
+
+	test("keeps the failure probe while the server reports remaining budget", async () => {
+		const directory = await makeTemporaryDirectory();
+		const progressFile = path.join(directory, "progress.ndjson");
+		let currentTime = 1_000_000;
+		const waits: number[] = [];
+		const snapshot: RateLimitSnapshot = {
+			limit: 200,
+			remaining: 7,
+			resetAt: 5_000_000,
+			observedAt: 1_000_000,
+		};
+		const cooldown = await createDeleteTweetCooldown({
+			accountId: "123",
+			progressFile,
+			signal: new AbortController().signal,
+			now: () => currentTime,
+			random: () => 0,
+			serverSnapshot: () => snapshot,
+			wait: async (milliseconds) => {
+				waits.push(milliseconds);
+				currentTime += milliseconds;
+			},
+		});
+
+		await cooldown.recordFailure();
+		await cooldown.beforeAttempt();
+
+		expect(waits).toEqual([900_000]);
+	});
+
+	test("ignores a snapshot whose reset has already passed", async () => {
+		const directory = await makeTemporaryDirectory();
+		const progressFile = path.join(directory, "progress.ndjson");
+		const events = Array.from({ length: 200 }, (_, index) => ({
+			version: 1,
+			at: new Date(index * 1_000).toISOString(),
+			accountId: "123",
+			postId: String(index),
+			kind: "post",
+			status: "deleted",
+			attempts: 1,
+		}));
+		await fs.writeFile(progressFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+		let currentTime = 300_000;
+		const waits: number[] = [];
+		const snapshot: RateLimitSnapshot = {
+			limit: 200,
+			remaining: 0,
+			resetAt: 200_000,
+			observedAt: 150_000,
+		};
+		const cooldown = await createDeleteTweetCooldown({
+			accountId: "123",
+			progressFile,
+			signal: new AbortController().signal,
+			now: () => currentTime,
+			random: () => 0,
+			serverSnapshot: () => snapshot,
+			wait: async (milliseconds) => {
+				waits.push(milliseconds);
+				currentTime += milliseconds;
+			},
+		});
+
+		await cooldown.beforeAttempt();
+
+		expect(waits).toEqual([615_000]);
 	});
 
 	test("probes with increasing waits and saves a successful recovery interval", async () => {
@@ -561,8 +720,85 @@ describe("adaptive DeleteTweet cooldown", () => {
 		await cooldown.beforeAttempt();
 		await cooldown.recordSuccess();
 
-		expect(waits).toEqual([60_000, 120_000]);
+		expect(waits).toEqual([900_000, 1_800_000]);
 		expect(notices).toEqual(["limit_detected", "waiting", "limit_detected", "waiting", "recovered"]);
-		expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).toMatchObject({ probeMs: 213_000 });
+		expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).toMatchObject({ probeMs: 1_800_000 });
+	});
+});
+
+describe("rate limit headers", () => {
+	const createFakeHeaderSource = () => {
+		const listeners = new Set<(response: RateLimitResponse) => void>();
+		return {
+			source: {
+				on: (_event: "response", listener: (response: RateLimitResponse) => void) => {
+					listeners.add(listener);
+				},
+				off: (_event: "response", listener: (response: RateLimitResponse) => void) => {
+					listeners.delete(listener);
+				},
+			},
+			emit: (url: string, headers: Record<string, string>) => {
+				for (const listener of listeners) listener({ url: () => url, headers: () => headers });
+			},
+			size: () => listeners.size,
+		};
+	};
+
+	test("parses the limit, remaining, and reset values", () => {
+		expect(
+			parseRateLimitHeaders(
+				{
+					"X-Rate-Limit-Limit": "200",
+					"x-rate-limit-remaining": "42",
+					"x-rate-limit-reset": "1709000000",
+				},
+				1_000,
+			),
+		).toEqual({ limit: 200, remaining: 42, resetAt: 1_709_000_000_000, observedAt: 1_000 });
+	});
+
+	test("accepts headers without a limit value", () => {
+		expect(parseRateLimitHeaders({ "x-rate-limit-remaining": "0", "x-rate-limit-reset": "1709000000" }, 1_000)).toEqual(
+			{ limit: undefined, remaining: 0, resetAt: 1_709_000_000_000, observedAt: 1_000 },
+		);
+	});
+
+	test("rejects missing, negative, or unparsable values", () => {
+		expect(parseRateLimitHeaders({ "x-rate-limit-reset": "1709000000" }, 1_000)).toBeUndefined();
+		expect(parseRateLimitHeaders({ "x-rate-limit-remaining": "42" }, 1_000)).toBeUndefined();
+		expect(
+			parseRateLimitHeaders({ "x-rate-limit-remaining": "-1", "x-rate-limit-reset": "1709000000" }, 1_000),
+		).toBeUndefined();
+		expect(parseRateLimitHeaders({ "x-rate-limit-remaining": "42", "x-rate-limit-reset": "0" }, 1_000)).toBeUndefined();
+		expect(
+			parseRateLimitHeaders({ "x-rate-limit-remaining": "unknown", "x-rate-limit-reset": "1709000000" }, 1_000),
+		).toBeUndefined();
+	});
+
+	test("stores the latest snapshot per mutation operation", () => {
+		const fake = createFakeHeaderSource();
+		const store = createRateLimitHeaderStore(fake.source);
+
+		fake.emit("https://x.com/i/api/graphql/abc/DeleteTweet", {
+			"x-rate-limit-limit": "200",
+			"x-rate-limit-remaining": "10",
+			"x-rate-limit-reset": "2000",
+		});
+		fake.emit("https://x.com/i/api/graphql/abc/DeleteRetweet", {
+			"x-rate-limit-remaining": "3",
+			"x-rate-limit-reset": "3000",
+		});
+		fake.emit("https://x.com/i/api/graphql/abc/Viewer", {
+			"x-rate-limit-remaining": "1",
+			"x-rate-limit-reset": "4000",
+		});
+
+		expect(store.get("DeleteTweet")).toMatchObject({ limit: 200, remaining: 10 });
+		expect(store.get("DeleteRetweet")).toMatchObject({ limit: undefined, remaining: 3 });
+
+		store.dispose();
+
+		expect(fake.size()).toBe(0);
 	});
 });

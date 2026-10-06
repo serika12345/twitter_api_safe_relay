@@ -3,5 +3,6 @@ export * from "./api-result.ts";
 export * from "./archive.ts";
 export * from "./catalog.ts";
 export * from "./progress.ts";
+export * from "./rate-limit-headers.ts";
 export * from "./rate-limiter.ts";
 export * from "./runner.ts";

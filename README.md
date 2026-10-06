@@ -164,7 +164,7 @@ pnpm archive:status --archive ./my_archive
 pnpm archive:verify --archive ./my_archive --profile archive-delete
 ```
 
-The delete command verifies the live account by immutable account ID and asks for an exact destructive confirmation. Requests use a randomized interval, rolling mutation limits, one retry by default, resumable progress, and a delayed second verification pass for X propagation latency.
+The delete command verifies the live account by immutable account ID and asks for an exact destructive confirmation. Requests use a randomized interval, per-operation rolling limits, one retry by default, resumable progress, and a delayed second verification pass for X propagation latency.
 
 Archive deletion documentation: [`packages/archive-delete/README.md`](packages/archive-delete/README.md)
 

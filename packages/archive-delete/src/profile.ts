@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { type ParseError, parse, printParseErrorCode } from "jsonc-parser";
 import { type BrowserContext, chromium, firefox, webkit } from "playwright";
+import { createRateLimitHeaderStore, type RateLimitHeaderStore } from "twitter-api-safe-relay/archive-delete";
 import { createTwitterBrowser, type TwitterApiProfileClient } from "twitter-api-safe-request";
 
 type BrowserType = "chromium" | "firefox" | "webkit";
@@ -51,6 +52,7 @@ export type ProfileOptions = {
 
 type OpenSession = {
 	client: TwitterApiProfileClient;
+	rateLimitHeaders: RateLimitHeaderStore;
 	close: () => Promise<void>;
 	profile: ResolvedProfile;
 };
@@ -216,10 +218,19 @@ export const openProfileSession = async (options: ProfileOptions): Promise<OpenS
 	const [context, close] = await connectBrowser(profile);
 	try {
 		const page = context.pages()[0] ?? (await context.newPage());
+		const rateLimitHeaders = createRateLimitHeaderStore(page);
 		const client = createTwitterBrowser(page);
 		await client.inject();
 		await client.goto(profile.homeUrl);
-		return { client, close, profile };
+		return {
+			client,
+			rateLimitHeaders,
+			close: async () => {
+				rateLimitHeaders.dispose();
+				await close();
+			},
+			profile,
+		};
 	} catch (error) {
 		await close();
 		throw error;

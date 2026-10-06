@@ -1,8 +1,8 @@
 import { createInterface } from "node:readline/promises";
 import {
 	createArchiveDeleteRunner,
+	createDeleteRetweetCooldown,
 	createDeleteTweetCooldown,
-	createMutationCooldown,
 	type RunnerProgress,
 	type RunnerSummary,
 } from "twitter-api-safe-relay/archive-delete";
@@ -103,12 +103,13 @@ const createRunner = async (
 		progress: job.progress,
 		maximumAttempts: options.maxAttempts,
 		requestTimeoutMs: options.requestTimeoutMs,
-		mutationCooldown: withMutationCooldown
-			? await createMutationCooldown({
+		deleteRetweetCooldown: withMutationCooldown
+			? await createDeleteRetweetCooldown({
 					accountId: job.archive.account.id,
 					progressFile: job.progressFile,
 					signal,
-					onNotice: ({ message }) => console.log(`[変更操作制限] ${message}`),
+					serverSnapshot: () => runtime.rateLimitHeaders.get("DeleteRetweet"),
+					onNotice: ({ message }) => console.log(`[リポスト解除制限] ${message}`),
 				})
 			: undefined,
 		deleteTweetCooldown: withMutationCooldown
@@ -116,7 +117,8 @@ const createRunner = async (
 					accountId: job.archive.account.id,
 					progressFile: job.progressFile,
 					signal,
-					onNotice: ({ message }) => console.log(`[削除操作制限] ${message}`),
+					serverSnapshot: () => runtime.rateLimitHeaders.get("DeleteTweet"),
+					onNotice: ({ message }) => console.log(`[通常ポスト制限] ${message}`),
 				})
 			: undefined,
 		isPostCompleted: job.hasConfirmedAbsence,

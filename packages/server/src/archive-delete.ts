@@ -4,11 +4,12 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command, InvalidArgumentError } from "commander";
 import { createTwitterBrowser } from "twitter-api-safe-request";
-import { createDeleteTweetCooldown, createMutationCooldown } from "./archive-delete/adaptive-cooldown.ts";
+import { createDeleteRetweetCooldown, createDeleteTweetCooldown } from "./archive-delete/adaptive-cooldown.ts";
 import { assertNoApiErrors, readViewerIdentity } from "./archive-delete/api-result.ts";
 import { loadArchive } from "./archive-delete/archive.ts";
 import { DEFAULT_CATALOG_URL, executeOperation, loadOperationCatalog } from "./archive-delete/catalog.ts";
 import { findRepeatedUnretweetPostIds, isConfirmedAbsent, readProgressEvents } from "./archive-delete/progress.ts";
+import { createRateLimitHeaderStore } from "./archive-delete/rate-limit-headers.ts";
 import { createRateLimiter } from "./archive-delete/rate-limiter.ts";
 import { createArchiveDeleteRunner, type RunnerProgress, type RunnerSummary } from "./archive-delete/runner.ts";
 import { connectProfileBrowser } from "./utils/browser.ts";
@@ -206,6 +207,11 @@ try {
 		const [context, close] = await connectProfileBrowser(browser);
 		closeBrowser = close;
 		const page = context.pages()[0] ?? (await context.newPage());
+		const rateLimitHeaders = createRateLimitHeaderStore(page);
+		closeBrowser = async () => {
+			rateLimitHeaders.dispose();
+			await close();
+		};
 		const client = createTwitterBrowser(page);
 		await client.inject();
 		await client.goto(profile.home.url);
@@ -246,16 +252,18 @@ try {
 			progress,
 			maximumAttempts: options.maxAttempts,
 			requestTimeoutMs: options.requestTimeoutMs,
-			mutationCooldown: await createMutationCooldown({
+			deleteRetweetCooldown: await createDeleteRetweetCooldown({
 				accountId: archive.account.id,
 				progressFile,
 				signal: abortController.signal,
-				onNotice: ({ message }) => console.log(`[変更操作制限] ${message}`),
+				serverSnapshot: () => rateLimitHeaders.get("DeleteRetweet"),
+				onNotice: ({ message }) => console.log(`[リポスト解除制限] ${message}`),
 			}),
 			deleteTweetCooldown: await createDeleteTweetCooldown({
 				accountId: archive.account.id,
 				progressFile,
 				signal: abortController.signal,
+				serverSnapshot: () => rateLimitHeaders.get("DeleteTweet"),
 				onNotice: ({ message }) => console.log(`[通常ポスト制限] ${message}`),
 			}),
 			isPostCompleted: hasConfirmedAbsence,

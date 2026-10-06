@@ -61,12 +61,18 @@ Normal posts are sent to `DeleteTweet`. For reposts, the tool looks up the outer
 
 Each API operation has two attempts by default. A post that still fails is saved as unresolved and processing continues with the next post. Running `delete` again resumes only unresolved work.
 
-Requests are spaced randomly from 1,050 to 1,350 milliseconds. Successful mutations are also limited by conservative rolling windows:
+Requests are spaced randomly from 1,050 to 1,350 milliseconds. That interval is client-side pacing, not a server-set limit.
+
+Successful mutations are limited per operation with a 15-minute rolling window:
 
 - 200 successful `DeleteTweet` operations per 15 minutes
-- 450 successful mutation operations per 60 minutes
+- 200 successful `DeleteRetweet` operations per 15 minutes
 
-The command waits until a slot becomes available. A restriction-like failure starts an adaptive recovery interval, which is persisted beside the progress log.
+The `DeleteTweet` value comes from the `x-rate-limit-limit` header X serves to the web client, measured by [xDelete](https://github.com/mercurioctrl/xDelete). X reports a 15-minute reset window for the internal API in [twikit](https://github.com/d60/twikit/blob/main/ratelimits.md). `DeleteRetweet` exposes no rate-limit headers, so the tool reuses the same 200-per-15-minute value; [XActions](https://github.com/nirholas/XActions) uses 300 per 15 minutes as its estimate.
+
+When a mutation response reports `x-rate-limit-limit`, `x-rate-limit-remaining`, and `x-rate-limit-reset`, the server values become authoritative: the command stops at zero remaining and resumes after the reported reset. The rolling windows above apply while no server value is available.
+
+The command waits until a slot becomes available. A restriction-like failure starts an adaptive recovery interval, which is persisted beside the progress log and defaults to 15 minutes, doubling up to 30 minutes.
 
 ## Verification and propagation delay
 
